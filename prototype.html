@@ -1,0 +1,194 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>クロワッサン工場 試作</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700;900&display=swap">
+<style>
+/* 縦1画面：上=数とゲージ、中=工場（在庫→作業台→オーブン→トレイ）、下=次の操作ヒント */
+:root{
+  --bg:#fbf1df;      /* 工場の壁：小麦粉っぽいクリーム */
+  --ink:#4a2f1c;     /* 線画と同じこげ茶 */
+  --crust:#d9893a;   /* 焼き色 */
+  --dough:#f4dfb6;   /* 生地 */
+  --steel:#9aa0a8;   /* オーブン */
+  --soft:#7a5a40;
+  --f:"Zen Maru Gothic","Hiragino Maru Gothic ProN","Yu Gothic",sans-serif;
+  color-scheme:light;
+}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--f);
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  padding-block:8px;box-sizing:border-box;display:flex;justify-content:center;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none}
+.wrap{width:100%;max-width:420px;height:100%;display:flex;flex-direction:column;gap:6px}
+.hud{display:flex;justify-content:space-between;font-weight:700;font-size:15px}
+.hud b{font-size:20px;font-variant-numeric:tabular-nums;margin-left:4px}
+.hud .ok b{color:var(--crust)} .hud .ng b{color:var(--ink)} .hud .raw b{color:#b9a27e}
+.gauge{position:relative;height:14px;border:2.5px solid var(--ink);border-radius:9px;overflow:hidden;
+  background:linear-gradient(90deg,var(--dough) 0 45%,#f6c983 45% 70%,#8a5a34 70% 100%)}
+.gauge i{position:absolute;top:-2px;bottom:-2px;width:4px;background:var(--ink);left:0;border-radius:2px}
+.stage{flex:1;min-height:0;position:relative}
+canvas{width:100%;height:100%;display:block}
+.hint{text-align:center;font-weight:700;font-size:15px;min-height:1.4em}
+.note{text-align:center;font-size:11px;color:var(--soft)}
+.start{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  background:color-mix(in srgb,var(--bg) 88%,transparent);font-weight:900;font-size:26px;cursor:pointer;border:0;color:var(--ink);font-family:var(--f)}
+.start small{font-size:14px;font-weight:500}
+.start:focus-visible{outline:3px solid var(--crust)}
+</style>
+
+<div class="wrap">
+  <div class="hud"><span class="ok">成功<b id="cOk">0</b></span><span class="ng">焦げ<b id="cNg">0</b></span><span class="raw">生焼け<b id="cRaw">0</b></span></div>
+  <div class="gauge"><i id="needle"></i></div>
+  <div class="stage" id="stage">
+    <canvas id="cv"></canvas>
+    <button class="start" id="start">タップしてスタート<small>音が出ます</small></button>
+  </div>
+  <div class="hint" id="hint"></div>
+  <div class="note">試作です</div>
+</div>
+
+<script>
+const C={W:360,H:600,gaugeSpeed:0.2,rawEnd:0.45,goodEnd:0.7,stock:4,tray:5};
+const IMG={};['02_roll_third','03_roll_twothirds','04_rolled_raw','05_baked_proud','06_baked_hot','07_burnt','08_undercooked','09_raw_worried','10_plain_sleep','11_plain_ball'].forEach(n=>{const i=new Image();i.src='images/'+n+'.png';IMG[n]=i});
+const cv=document.getElementById('cv'),ctx=cv.getContext('2d'),stageEl=document.getElementById('stage');
+let scale=1,offX=0,offY=0;
+function fit(){const r=stageEl.getBoundingClientRect(),d=devicePixelRatio||1;cv.width=r.width*d;cv.height=r.height*d;
+  scale=Math.min(r.width/C.W,r.height/C.H);offX=(r.width-C.W*scale)/2;offY=(r.height-C.H*scale)/2;ctx.setTransform(d*scale,0,0,d*scale,d*offX,d*offY)}
+addEventListener('resize',fit);fit();
+
+/* 音 */
+let ac;function tone(f,d,type='sine',v=.2,slide=0){if(!ac)return;const o=ac.createOscillator(),g=ac.createGain(),t=ac.currentTime;
+  o.type=type;o.frequency.setValueAtTime(f,t);if(slide)o.frequency.exponentialRampToValueAtTime(f*slide,t+d);
+  g.gain.setValueAtTime(v,t);g.gain.exponentialRampToValueAtTime(.001,t+d);o.connect(g).connect(ac.destination);o.start(t);o.stop(t+d)}
+const S={pof:()=>tone(220,.12,'triangle',.25,.5),tick:()=>tone(1400,.03,'square',.04),
+  chin:()=>{tone(1760,.8,'sine',.25);tone(2640,.6,'sine',.1)},bubu:()=>{tone(140,.25,'sawtooth',.15);setTimeout(()=>tone(120,.35,'sawtooth',.15),280)},
+  shobon:()=>tone(500,.6,'sine',.18,.5),hop:()=>tone(500,.12,'sine',.15,2),slide:()=>tone(300,.3,'triangle',.15,.4)};
+
+/* 配置（論理座標 360x600） */
+const SHELF_Y=120, TABLE_Y=290, SHEET_L=24, SHEET_R=336, OVEN={x:95,y:350,w:170,h:120}, TRAY_Y=575;
+const stockX=i=>300-i*80;
+
+/* 仮の素の犬（本番は絵に差し替え） */
+function plainDog(cx,by,s,t=0){ctx.save();ctx.translate(cx,by);ctx.scale(s,s);const b=Math.sin(t*2.5)*2;
+  ctx.lineWidth=5;ctx.strokeStyle='#4a2f1c';ctx.fillStyle='#fffaf3';
+  ctx.beginPath();ctx.ellipse(10,-40+b*.3,105,42-b*.3,0,0,7);ctx.fill();ctx.stroke();        // からだ
+  ctx.beginPath();ctx.ellipse(-55,-55,62,48,0,0,7);ctx.fill();ctx.stroke();                 // 顔
+  [[-110,-55,.5],[0,-50,-.5]].forEach(([x,y,r])=>{ctx.beginPath();ctx.ellipse(x,y,22,34,r,0,7);ctx.fill();ctx.stroke()}); // 耳
+  ctx.fillStyle='#f7c6c0';[[-88,-42],[-22,-42]].forEach(([x,y])=>{ctx.beginPath();ctx.ellipse(x,y,10,7,0,0,7);ctx.fill()});
+  ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(-80,-60);ctx.lineTo(-66,-60);ctx.moveTo(-44,-60);ctx.lineTo(-30,-60);ctx.stroke(); // 眠そうな目
+  ctx.fillStyle='#4a2f1c';ctx.beginPath();ctx.ellipse(-55,-48,5,4,0,0,7);ctx.fill();
+  ctx.restore()}
+function drawImg(n,cx,by,s,a=1){const i=IMG[n];if(!i||!i.complete||!i.naturalWidth)return;const w=i.naturalWidth*s,h=i.naturalHeight*s;
+  ctx.globalAlpha=a;ctx.drawImage(i,cx-w/2,by-h,w,h);ctx.globalAlpha=1}
+function rr(x,y,w,h,r){ctx.beginPath();ctx.roundRect(x,y,w,h,r)}
+
+/* 本番の絵で上書き */
+function plainDog(cx,by,s,t=0){const i=IMG['10_plain_sleep'];if(!i.naturalWidth)return;const w=230*s,h=w*i.naturalHeight/i.naturalWidth,b=1+Math.sin(t*2.5)*.025;
+  ctx.drawImage(i,cx-w/2,by-h*b,w,h*b)}
+function ballDog(cx,cy,ang,wrap){const i=IMG['11_plain_ball'];ctx.save();ctx.translate(cx,cy);ctx.rotate(ang);
+  if(i.naturalWidth){const w=BALL_R*2.4,h=w*i.naturalHeight/i.naturalWidth;ctx.drawImage(i,-w/2,-h/2,w,h)}
+  const th=4+wrap*12,span=wrap*Math.PI*1.55;
+  ctx.lineCap='round';ctx.strokeStyle='#4a2f1c';ctx.lineWidth=th+5;ctx.beginPath();ctx.arc(0,0,BALL_R+th/2-1,Math.PI*1.5-span/2,Math.PI*1.5+span/2);ctx.stroke();
+  ctx.strokeStyle='#f4dfb6';ctx.lineWidth=th;ctx.stroke();ctx.restore()}
+let pTarget=0,downX=0,downY=0;
+cv.addEventListener('pointerdown',e=>{downX=e.clientX;downY=e.clientY});
+cv.addEventListener('pointerup',e=>{if(Math.hypot(e.clientX-downX,e.clientY-downY)>10)return;
+  if(st==='roll'){pTarget=Math.min(1,Math.max(pTarget,p)+.125);S.pof()}else if(st==='ready')toOven()});
+setInterval(()=>{if(st==='roll'&&p<pTarget){p=Math.min(pTarget,p+.025);if(p>=1){st='ready';setHint(H2)}}if(st!=='roll')pTarget=0},16);
+
+/* 状態 */
+let st='start',t=0,p=0,dragX=null,dragY=null,heat=0,lastTick=0,res=null,resT=0,cnt={ok:0,ng:0,raw:0};
+let stock=[],tray=[],mover=null;  // mover: 在庫→台 / 台→オーブン / オーブン→トレイ の移動アニメ
+for(let i=0;i<C.stock;i++)stock.push({x:stockX(i),y:SHELF_Y,ph:Math.random()*6});
+const H1='← 左になぞる（クリック・タップ・←キーでも転がる）',H2='↓ 下にはじく（クリック・タップ・↓キーでもOK）でオーブンへ';
+const ROLL_START=262, ROLL_END=96, BALL_R=30;
+/* 仮の「丸まった犬」（本番は絵に差し替え）。ang で回転、wrap(0〜1)で生地が巻きつく */
+function ballDog(cx,cy,ang,wrap){ctx.save();ctx.translate(cx,cy);ctx.rotate(ang);ctx.lineWidth=3.5;ctx.strokeStyle='#4a2f1c';
+  ctx.fillStyle='#fffaf3';ctx.beginPath();ctx.arc(0,0,BALL_R,0,7);ctx.fill();ctx.stroke();
+  [[-22,-14,.6],[22,-14,-.6]].forEach(([x,y,r])=>{ctx.beginPath();ctx.ellipse(x,y,9,15,r,0,7);ctx.fill();ctx.stroke()});
+  ctx.fillStyle='#f7c6c0';[[-15,6],[15,6]].forEach(([x,y])=>{ctx.beginPath();ctx.ellipse(x,y,6,4,0,0,7);ctx.fill()});
+  ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(-14,-4);ctx.lineTo(-6,-4);ctx.moveTo(6,-4);ctx.lineTo(14,-4);ctx.stroke();
+  ctx.fillStyle='#4a2f1c';ctx.beginPath();ctx.ellipse(0,3,3,2.5,0,0,7);ctx.fill();
+  // 生地の帯が巻きついていく（顔の反対側から増える）
+  const th=4+wrap*12,span=wrap*Math.PI*1.55;
+  ctx.lineCap='round';ctx.strokeStyle='#4a2f1c';ctx.lineWidth=th+5;ctx.beginPath();ctx.arc(0,0,BALL_R+th/2-3,Math.PI/2-span/2+Math.PI,Math.PI/2+span/2+Math.PI,false);ctx.stroke();
+  ctx.strokeStyle='#f4dfb6';ctx.lineWidth=th;ctx.stroke();
+  ctx.restore()}
+const hint=document.getElementById('hint'),needle=document.getElementById('needle');
+function setHint(s){hint.textContent=s}
+
+function nextDog(){st='arrive';p=0;heat=0;const d=stock.shift();
+  mover={from:{x:d.x,y:d.y,s:.36},to:{x:ROLL_START,y:TABLE_Y-6,s:.5},t:0,dur:.55,kind:'plain'};S.hop();
+  stock.forEach((s,i)=>s.tx=stockX(i));stock.push({x:-80,y:SHELF_Y,tx:stockX(C.stock-1),ph:Math.random()*6});
+  setHint('')}
+document.getElementById('start').onclick=e=>{e.currentTarget.hidden=true;try{ac=new (window.AudioContext||window.webkitAudioContext)()}catch(_){};nextDog()};
+
+/* 操作 */
+cv.addEventListener('pointerdown',e=>{const r=cv.getBoundingClientRect();dragX=(e.clientX-r.left-offX)/scale;dragY=(e.clientY-r.top-offY)/scale;
+  if(st==='bake')takeOut()});
+cv.addEventListener('pointermove',e=>{if(dragX===null)return;const r=cv.getBoundingClientRect(),x=(e.clientX-r.left-offX)/scale,y=(e.clientY-r.top-offY)/scale;
+  if(st==='roll'){const dx=dragX-x;if(dx>0){const np=Math.min(1,p+dx/260);if(Math.floor(np*8)>Math.floor(p*8))S.pof();p=np;dragX=x}
+    if(p>=1){st='ready';setHint(H2)}}
+  if(st==='ready'&&y-dragY>40){toOven();dragX=null}});
+addEventListener('pointerup',()=>{dragX=null});
+addEventListener('keydown',e=>{if(st==='roll'&&e.key==='ArrowLeft'){p=Math.min(1,p+.17);S.pof();if(p>=1){st='ready';setHint(H2)}}
+  else if(st==='ready'&&e.key==='ArrowDown')toOven();else if(st==='bake'&&e.key===' ')takeOut()});
+
+function toOven(){st='toOven';S.slide();mover={from:{x:ROLL_END+20,y:TABLE_Y,s:.34},to:{x:180,y:OVEN.y+OVEN.h-12,s:.3},t:0,dur:.5,kind:'09_raw_worried'};setHint('')}
+function takeOut(){let kind,n;if(heat<C.rawEnd){kind='raw';n='08_undercooked';S.shobon()}else if(heat<C.goodEnd){kind='ok';n=Math.random()<.5?'05_baked_proud':'06_baked_hot';S.chin()}else{kind='ng';n='07_burnt';S.bubu()}
+  cnt[kind]++;document.getElementById('c'+{ok:'Ok',ng:'Ng',raw:'Raw'}[kind]).textContent=cnt[kind];
+  st='result';res=n;resT=0;setHint({ok:'こんがり！',ng:'焦げた…',raw:'まだ白い…'}[kind])}
+
+/* 描画 */
+const ease=x=>1-Math.pow(1-x,3);
+function frame(now){const dt=Math.min(.05,(now-(frame.l||now))/1000);frame.l=now;t+=dt;
+  ctx.clearRect(-50,-50,C.W+100,C.H+100);
+
+  // 在庫の棚
+  ctx.fillStyle='#e9cfa2';ctx.strokeStyle='#4a2f1c';ctx.lineWidth=3;rr(6,SHELF_Y,348,12,6);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#7a5a40';ctx.font='700 12px '+getComputedStyle(document.body).fontFamily;ctx.fillText('ざいこ',12,SHELF_Y+28);
+  stock.forEach(s=>{if(s.tx!==undefined)s.x+=(s.tx-s.x)*Math.min(1,dt*6);ctx.save();if(s.flip){ctx.translate(2*s.x,0);ctx.scale(-1,1)}plainDog(s.x,s.y,.36,t+s.ph);ctx.restore()});
+
+  // 作業台と生地
+  ctx.fillStyle='#e6c79a';rr(6,TABLE_Y+2,348,26,6);ctx.fill();ctx.stroke();
+  if(['arrive','roll'].includes(st)){
+    // 犬が生地の上を左へ転がる。通ったあとの生地は犬に巻き取られて消える
+    const x=ROLL_START-(ROLL_START-ROLL_END)*p;
+    ctx.fillStyle='#f4dfb6';rr(SHEET_L,TABLE_Y-12,Math.max(0,x-SHEET_L+10),14,7);ctx.fill();ctx.stroke();
+    if(p===0){if(st==='roll'||!mover)plainDog(ROLL_START,TABLE_Y-6,.5,t);}
+    else if(p<.92){const r=BALL_R+4+p*12;ballDog(x,TABLE_Y-r+4,-(ROLL_START-x)/r,p);}
+    else drawImg('04_rolled_raw',ROLL_END+20,TABLE_Y+2,.34);
+    if(st==='roll'&&p===0){const a=(Math.sin(t*4)+1)/2;ctx.globalAlpha=.4+.6*a;ctx.fillStyle='#4a2f1c';ctx.beginPath();
+      const hx=ROLL_START-90-a*40;ctx.moveTo(hx,TABLE_Y-70);ctx.lineTo(hx+16,TABLE_Y-80);ctx.lineTo(hx+16,TABLE_Y-60);ctx.fill();ctx.globalAlpha=1}
+  }
+  if(st==='ready')drawImg('04_rolled_raw',ROLL_END+20,TABLE_Y+2+Math.sin(t*10)*1,.4);
+
+  // オーブン
+  const o=OVEN;ctx.fillStyle='#9aa0a8';rr(o.x,o.y,o.w,o.h,14);ctx.fill();ctx.stroke();
+  const glow=st==='bake'?heat:0;ctx.fillStyle=`rgb(${255},${Math.round(232-glow*90)},${Math.round(196-glow*150)})`;rr(o.x+14,o.y+24,o.w-28,o.h-38,8);ctx.fill();ctx.stroke();
+  ctx.fillStyle='#fffaf3';ctx.fillText('OVEN',o.x+14,o.y+17);ctx.beginPath();ctx.arc(o.x+o.w-18,o.y+12,6,0,7);ctx.fillStyle='#4a2f1c';ctx.fill();
+  if(st==='bake'){heat+=dt*C.gaugeSpeed;if(t-lastTick>.5){S.tick();lastTick=t}
+    drawImg('09_raw_worried',180+Math.sin(t*30)*heat*1.5,o.y+o.h-16,.28);
+    ctx.fillStyle=`rgba(217,137,58,${Math.min(.55,heat*.6)})`;rr(o.x+14,o.y+24,o.w-28,o.h-38,8);ctx.fill();
+    if(heat>=1)takeOut()}
+  needle.style.left=`calc(${Math.min(1,heat)*100}% - 2px)`;
+
+  // 結果：ぴょんと出てトレイへ
+  if(st==='result'){resT+=dt;const j=Math.min(1,resT/.4),hop=Math.sin(j*Math.PI)*50;
+    if(resT<1.2)drawImg(res,180,o.y+o.h+40-hop*(resT<.4?1:0),.32);
+    else{tray.unshift(res);tray=tray.slice(0,C.tray);nextDog()}}
+
+  // 完成トレイ
+  ctx.fillStyle='#c9a27a';rr(6,TRAY_Y,348,12,6);ctx.fill();ctx.stroke();ctx.fillStyle='#7a5a40';ctx.fillText('できあがり',12,TRAY_Y+28>C.H?TRAY_Y-70:TRAY_Y+28);
+  tray.forEach((n,i)=>drawImg(n,320-i*68,TRAY_Y+2,.15));
+
+  // 移動アニメ
+  if(mover){mover.t+=dt;const k=ease(Math.min(1,mover.t/mover.dur)),f=mover.from,g=mover.to;
+    const x=f.x+(g.x-f.x)*k,y=f.y+(g.y-f.y)*k-Math.sin(k*Math.PI)*40,s=f.s+(g.s-f.s)*k;
+    if(mover.kind==='plain')plainDog(x,y,s,t);else drawImg(mover.kind,x,y,s);
+    if(k>=1){const m=mover;mover=null;
+      if(m.kind==='plain'){st='roll';setHint(H1)}
+      else{st='bake';setHint('いい焼き色でタップ！')}}}
+
+  requestAnimationFrame(frame)}
+requestAnimationFrame(frame);
+</script>
