@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>クロワッサン工場</title>
+<style>
+  :root {
+    --belt-y: 38%;      /* コンベア上面の高さ（ステージ下からの位置） */
+    --belt-h: 16px;
+    --brown: #5a3b1c;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+    background: #fdf3e1;
+  }
+  #app {
+    position: relative;
+    max-width: 480px;
+    height: 100%;
+    height: 100dvh;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    background: #fdf3e1;
+    color: var(--brown);
+    font-family: "Hiragino Maru Gothic ProN", "Rounded Mplus 1c", system-ui, sans-serif;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  img { pointer-events: none; -webkit-user-drag: none; }
+
+  /* 個数表示 */
+  #hud {
+    display: flex;
+    justify-content: space-around;
+    padding: calc(12px + env(safe-area-inset-top)) 16px 8px;
+    font-size: 16px;
+    font-weight: bold;
+  }
+  #hud b { font-size: 22px; margin-left: 4px; }
+  #hud .good b { color: #d98a1c; }
+  #hud .burnt b { color: #4a3a32; }
+  #hud .raw b { color: #b8a27a; }
+
+  /* 焼きゲージ */
+  #gauge {
+    position: relative;
+    display: flex;
+    height: 24px;
+    margin: 4px 16px 0;
+    border: 3px solid var(--brown);
+    border-radius: 12px;
+    overflow: hidden;
+    opacity: 0.35;
+    transition: opacity 0.2s;
+  }
+  #gauge.on { opacity: 1; }
+  #gauge .zone { height: 100%; }
+  #gauge .raw { background: #f6e7c4; }
+  #gauge .good { background: #f2a93b; }
+  #gauge .burnt { background: #6b4a3a; flex: 1; }
+  #needle {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    left: 0;
+    width: 4px;
+    margin-left: -2px;
+    background: #e0322b;
+    box-shadow: 0 0 0 1px #fff;
+  }
+
+  /* 舞台 */
+  #stage { position: relative; flex: 1; overflow: hidden; }
+  #floor {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: var(--belt-y);
+    background: #ead6b3;
+  }
+  #belt {
+    position: absolute;
+    left: 0; right: 0;
+    bottom: calc(var(--belt-y) - var(--belt-h));
+    height: var(--belt-h);
+    border-top: 3px solid var(--brown);
+    border-bottom: 3px solid var(--brown);
+    background: repeating-linear-gradient(90deg, #8a8a8a 0 12px, #b3b3b3 12px 24px);
+    z-index: 1;
+  }
+  #item {
+    position: absolute;
+    bottom: var(--belt-y);
+    left: 28%;
+    width: 50%;
+    transform-origin: 50% 100%;
+    z-index: 2;
+  }
+  #item.front { z-index: 4; }
+  #oven {
+    position: absolute;
+    right: 3%;
+    bottom: calc(var(--belt-y) - var(--belt-h) - 6px);
+    width: 44%;
+    aspect-ratio: 1 / 0.85;
+    border: 12px solid #9aa0a8;
+    border-top-width: 36px;
+    border-radius: 16px;
+    background: rgba(255, 150, 40, 0.15);
+    box-shadow: inset 0 0 0 3px var(--brown), 0 0 0 3px var(--brown);
+    z-index: 3;
+  }
+  #lamp {
+    position: absolute;
+    top: -26px;
+    right: 6px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid var(--brown);
+    background: #555;
+  }
+  #lamp.on { background: #ff4a2a; box-shadow: 0 0 8px #ff4a2a; }
+  #ovenLabel {
+    position: absolute;
+    top: -30px;
+    left: 4px;
+    font-size: 13px;
+    font-weight: bold;
+    color: #fff;
+  }
+
+  /* 結果のふきだし */
+  #msg {
+    position: absolute;
+    left: 28%;
+    top: 12%;
+    transform: translateX(-50%) scale(0);
+    padding: 8px 16px;
+    border: 3px solid var(--brown);
+    border-radius: 16px;
+    background: #fff;
+    font-size: 22px;
+    font-weight: bold;
+    white-space: nowrap;
+    z-index: 5;
+    transition: transform 0.2s cubic-bezier(.3, 1.6, .5, 1);
+  }
+  #msg.show { transform: translateX(-50%) scale(1); }
+
+  #hint {
+    min-height: 64px;
+    padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+    text-align: center;
+    font-size: 18px;
+    font-weight: bold;
+  }
+
+  /* スタート画面 */
+  #start {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    background: #fdf3e1;
+    z-index: 10;
+    cursor: pointer;
+  }
+  #start h1 { margin: 0; font-size: 32px; }
+  #start img { width: 60%; max-width: 260px; }
+  #start p {
+    margin: 0;
+    font-size: 20px;
+    font-weight: bold;
+    animation: blink 1.2s ease-in-out infinite;
+  }
+  #start.hide { display: none; }
+  @keyframes blink { 50% { opacity: 0.3; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="hud">
+    <div class="good">成功<b id="cGood">0</b></div>
+    <div class="burnt">焦げ<b id="cBurnt">0</b></div>
+    <div class="raw">生焼け<b id="cRaw">0</b></div>
+  </div>
+  <div id="gauge">
+    <div class="zone raw" id="zRaw"></div>
+    <div class="zone good" id="zGood"></div>
+    <div class="zone burnt"></div>
+    <div id="needle"></div>
+  </div>
+  <div id="stage">
+    <div id="floor"></div>
+    <div id="belt"></div>
+    <img id="item" alt="" draggable="false">
+    <div id="oven"><span id="ovenLabel">OVEN</span><div id="lamp"></div></div>
+    <div id="msg"></div>
+  </div>
+  <div id="hint"></div>
+  <div id="start">
+    <h1>クロワッサン工場</h1>
+    <img src="images/05_baked_proud.png" alt="" draggable="false">
+    <p>タップしてスタート</p>
+  </div>
+</div>
+
+<script>
+// ===== 調整しやすい値 =====
+const CONFIG = {
+  BAKE_SPEED: 0.28,        // 焼きゲージが1秒に進む量（ゲージ全体＝1）
+  RAW_WIDTH: 0.55,         // 「生焼け」区間の幅（0〜1）
+  GOOD_WIDTH: 0.2,         // 「ちょうどいい」区間の幅（残りが「焦げ」）
+  CONVEYOR_SPEED: 0.3,     // コンベアの速さ（1秒に画面幅の何割進むか）
+  RESULT_TIME: 1500,       // 結果を見せてから次の生地が出るまで（ミリ秒）
+  ROLLED_WAIT: 500,        // 巻き終わりから運び始めるまで（ミリ秒）
+  JUMP_TIME: 0.6,          // 焼き上がりジャンプの時間（秒）
+  JUMP_HEIGHT: 0.35,       // ジャンプの高さ（舞台の高さに対する割合）
+  SWIPE_MIN: 40,           // スワイプとみなす距離（px）
+  TICK_INTERVAL: 0.45,     // チクタクの間隔（秒）
+  ROLL_X: 28,              // 巻く場所（舞台の横位置 %）
+  OVEN_X: 75,              // オーブンの中心（舞台の横位置 %）
+  OVEN_SCALE: 0.7,         // オーブンの中での大きさ
+};
+
+const IMG = {
+  1: 'images/01_dough_flat.png',
+  2: 'images/02_roll_third.png',
+  3: 'images/03_roll_twothirds.png',
+  4: 'images/04_rolled_raw.png',
+  5: 'images/05_baked_proud.png',
+  6: 'images/06_baked_hot.png',
+  7: 'images/07_burnt.png',
+  8: 'images/08_undercooked.png',
+  9: 'images/09_raw_worried.png',
+};
+Object.values(IMG).forEach(src => { new Image().src = src; });
+
+const $ = id => document.getElementById(id);
+const app = $('app'), stage = $('stage'), item = $('item'), oven = $('oven');
+const belt = $('belt'), gaugeEl = $('gauge'), needle = $('needle'), lamp = $('lamp');
+const msg = $('msg'), hint = $('hint'), startEl = $('start');
+
+$('zRaw').style.width = CONFIG.RAW_WIDTH * 100 + '%';
+$('zGood').style.width = CONFIG.GOOD_WIDTH * 100 + '%';
+
+// ===== 音（Web Audio API で合成） =====
+let ac = null, master = null;
+function initAudio() {
+  if (ac) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  ac = new AC();
+  master = ac.createGain();
+  master.gain.value = 0.8;
+  master.connect(ac.destination);
+  if (ac.state === 'suspended') ac.resume();
+  // iOS 用：無音を1回鳴らして音を解禁する
+  const s = ac.createBufferSource();
+  s.buffer = ac.createBuffer(1, 1, 22050);
+  s.connect(ac.destination);
+  s.start(0);
+}
+function tone({ type = 'sine', f0, f1 = f0, t = 0, dur, gain = 0.3, attack = 0.005 }) {
+  if (!ac) return;
+  const now = ac.currentTime + t;
+  const o = ac.createOscillator(), g = ac.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(f0, now);
+  if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, now + dur);
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(gain, now + attack);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  o.connect(g).connect(master);
+  o.start(now);
+  o.stop(now + dur + 0.05);
+}
+function noise({ t = 0, dur, gain = 0.3, freq = 1000 }) {
+  if (!ac) return;
+  const now = ac.currentTime + t;
+  const buf = ac.createBuffer(1, Math.ceil(ac.sampleRate * dur), ac.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  const src = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+  src.buffer = buf;
+  f.type = 'lowpass';
+  f.frequency.value = freq;
+  g.gain.setValueAtTime(gain, now);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  src.connect(f).connect(g).connect(master);
+  src.start(now);
+}
+const sfx = {
+  pof() {
+    noise({ dur: 0.12, gain: 0.5, freq: 800 });
+    tone({ f0: 240, f1: 90, dur: 0.14, gain: 0.5 });
+  },
+  tick(alt) {
+    tone({ type: 'square', f0: alt ? 1500 : 1100, dur: 0.03, gain: 0.04 });
+  },
+  chin() {
+    tone({ type: 'triangle', f0: 2093, dur: 0.08, gain: 0.15 });
+    tone({ f0: 1568, dur: 1.6, gain: 0.3 });
+    tone({ f0: 3136, dur: 0.9, gain: 0.1 });
+    tone({ f0: 4740, dur: 0.5, gain: 0.05 });
+  },
+  buzz() {
+    for (const t of [0, 0.3]) {
+      const dur = t ? 0.45 : 0.22;
+      tone({ type: 'sawtooth', f0: 120, t, dur, gain: 0.18 });
+      tone({ type: 'square', f0: 123, t, dur, gain: 0.08 });
+    }
+  },
+  shobon() {
+    tone({ type: 'triangle', f0: 523, f1: 494, dur: 0.25, gain: 0.3 });
+    tone({ type: 'triangle', f0: 392, f1: 311, t: 0.3, dur: 0.6, gain: 0.3 });
+  },
+};
+
+// ===== 状態 =====
+// start → roll → rolled → carry → bake → result → roll ...
+let phase = 'start';
+let rollStep = 0;
+let x = CONFIG.ROLL_X;   // 横位置（%）
+let y = 0;               // 浮き上がり（px）
+let scale = 1;
+let wobble = 0;          // 運ぶ間のぷるぷる
+let popT = 1;            // 出現アニメの進み（0→1）
+let squashT = 1;         // 巻いたときの「むにっ」（0→1）
+let gauge = 0, tickT = 0, tickAlt = false;
+let jumpT = 0;
+let beltOff = 0;
+const counts = { good: 0, burnt: 0, raw: 0 };
+
+function setImg(n) { item.src = IMG[n]; }
+function setHint(text) { hint.textContent = text; }
+function showMsg(text) { msg.textContent = text; msg.classList.add('show'); }
+function hideMsg() { msg.classList.remove('show'); }
+
+function startRoll() {
+  phase = 'roll';
+  rollStep = 0;
+  x = CONFIG.ROLL_X; y = 0; scale = 1; wobble = 0;
+  popT = 0;
+  item.classList.remove('front');
+  setImg(1);
+  hideMsg();
+  needle.style.left = '0%';
+  setHint('← 左にスワイプして巻こう（0/3）');
+}
+
+function roll() {
+  if (phase !== 'roll') return;
+  rollStep++;
+  sfx.pof();
+  setImg(rollStep + 1);
+  squashT = 0;
+  setHint(`← 左にスワイプして巻こう（${rollStep}/3）`);
+  if (rollStep >= 3) {
+    phase = 'rolled';
+    setHint('巻けた！');
+    setTimeout(startCarry, CONFIG.ROLLED_WAIT);
+  }
+}
+
+function startCarry() {
+  phase = 'carry';
+  setImg(9);
+  setHint('オーブンへ…');
+}
+
+function startBake() {
+  phase = 'bake';
+  gauge = 0; tickT = 0;
+  gaugeEl.classList.add('on');
+  lamp.classList.add('on');
+  setHint('いい焼き色でタップ！');
+}
+
+function finish(kind) {
+  phase = 'result';
+  counts[kind]++;
+  $('cGood').textContent = counts.good;
+  $('cBurnt').textContent = counts.burnt;
+  $('cRaw').textContent = counts.raw;
+  gaugeEl.classList.remove('on');
+  lamp.classList.remove('on');
+  oven.style.background = '';
+
+  if (kind === 'good') { setImg(Math.random() < 0.5 ? 5 : 6); sfx.chin(); }
+  else if (kind === 'burnt') { setImg(7); sfx.buzz(); }
+  else { setImg(8); sfx.shobon(); }
+
+  jumpT = 0;
+  item.classList.add('front');
+  const text = { good: '成功！', burnt: '焦げた…', raw: '生焼け…' }[kind];
+  setHint(text);
+  setTimeout(() => showMsg(text), CONFIG.JUMP_TIME * 1000);
+  setTimeout(startRoll, CONFIG.JUMP_TIME * 1000 + CONFIG.RESULT_TIME);
+}
+
+function judge() {
+  const goodEnd = CONFIG.RAW_WIDTH + CONFIG.GOOD_WIDTH;
+  if (gauge < CONFIG.RAW_WIDTH) finish('raw');
+  else if (gauge < goodEnd) finish('good');
+  else finish('burnt');
+}
+
+// ===== 毎フレームの更新 =====
+const easeOutBack = p => 1 + 2.7 * Math.pow(p - 1, 3) + 1.7 * Math.pow(p - 1, 2);
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  const stageW = stage.clientWidth, stageH = stage.clientHeight;
+
+  if (phase === 'carry') {
+    const startX = CONFIG.ROLL_X, endX = CONFIG.OVEN_X;
+    x = Math.min(x + CONFIG.CONVEYOR_SPEED * 100 * dt, endX);
+    const p = (x - startX) / (endX - startX);
+    scale = 1 + (CONFIG.OVEN_SCALE - 1) * p;
+    wobble += dt;
+    beltOff += CONFIG.CONVEYOR_SPEED * stageW * dt;
+    belt.style.backgroundPosition = `${beltOff}px 0`;
+    if (x >= endX) { wobble = 0; startBake(); }
+  } else if (phase === 'bake') {
+    gauge = Math.min(gauge + CONFIG.BAKE_SPEED * dt, 1);
+    needle.style.left = gauge * 100 + '%';
+    oven.style.background = `rgba(255, ${150 - gauge * 90}, 40, ${0.15 + gauge * 0.45})`;
+    tickT += dt;
+    if (tickT >= CONFIG.TICK_INTERVAL) { tickT = 0; tickAlt = !tickAlt; sfx.tick(tickAlt); }
+    if (gauge >= 1) finish('burnt');
+  } else if (phase === 'result') {
+    jumpT = Math.min(jumpT + dt / CONFIG.JUMP_TIME, 1);
+    x = CONFIG.OVEN_X + (CONFIG.ROLL_X - CONFIG.OVEN_X) * jumpT;
+    y = Math.sin(Math.PI * jumpT) * CONFIG.JUMP_HEIGHT * stageH;
+    scale = CONFIG.OVEN_SCALE + (1 - CONFIG.OVEN_SCALE) * jumpT;
+    if (jumpT >= 1 && y !== 0) { y = 0; squashT = 0; }
+  }
+
+  // 見た目に反映
+  let sx = scale, sy = scale, rot = 0;
+  if (popT < 1) {
+    popT = Math.min(popT + dt / 0.35, 1);
+    const s = easeOutBack(popT);
+    sx *= s; sy *= s;
+  }
+  if (squashT < 1) {
+    squashT = Math.min(squashT + dt / 0.25, 1);
+    const k = Math.sin(Math.PI * squashT) * 0.12;
+    sx *= 1 + k; sy *= 1 - k;
+  }
+  if (phase === 'carry') {
+    rot = Math.sin(wobble * 28) * 3;
+    sy *= 1 + Math.sin(wobble * 40) * 0.03;
+  }
+  item.style.left = x + '%';
+  item.style.transform = `translate(-50%, ${-y}px) rotate(${rot}deg) scale(${sx}, ${sy})`;
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ===== 操作 =====
+startEl.addEventListener('click', () => {
+  initAudio();
+  startEl.classList.add('hide');
+  startRoll();
+});
+
+let down = null;
+app.addEventListener('pointerdown', e => {
+  if (phase === 'start') return;
+  down = { x: e.clientX, y: e.clientY, used: false };
+  if (phase === 'bake') judge();
+});
+app.addEventListener('pointermove', e => {
+  if (!down || down.used || phase !== 'roll') return;
+  const dx = e.clientX - down.x, dy = e.clientY - down.y;
+  if (-dx >= CONFIG.SWIPE_MIN && Math.abs(dx) > Math.abs(dy)) {
+    down.used = true;
+    roll();
+  }
+});
+const up = () => { down = null; };
+app.addEventListener('pointerup', up);
+app.addEventListener('pointercancel', up);
+
+// PC 用：← キーで巻く、スペースで取り出す
+window.addEventListener('keydown', e => {
+  if (phase === 'start' && (e.key === ' ' || e.key === 'Enter')) { startEl.click(); return; }
+  if (e.key === 'ArrowLeft') roll();
+  if (e.key === ' ' && phase === 'bake') judge();
+});
+</script>
+</body>
+</html>
